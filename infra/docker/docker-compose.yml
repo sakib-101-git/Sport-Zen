@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with PostGIS
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: sportzen-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sportzen
+      POSTGRES_PASSWORD: sportzen_dev_password
+      POSTGRES_DB: sportzen
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sportzen -d sportzen"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching, rate limiting, and slot locks
+  redis:
+    image: redis:7-alpine
+    container_name: sportzen-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Commander (development only - UI for Redis)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: sportzen-redis-commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    profiles:
+      - dev
+
+  # pgAdmin (development only - UI for PostgreSQL)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: sportzen-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@sportzen.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    profiles:
+      - dev
+
+volumes:
+  postgres_data:
+  redis_data:
+  pgadmin_data:
+
+networks:
+  default:
+    name: sportzen-network

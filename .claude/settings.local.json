@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(for file in \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/web/app/\\(admin\\)/admin/\"*.tsx)",
+      "Bash(do wc -l \"$file\")",
+      "Bash(done)",
+      "Bash(for file in \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/api/src/modules/payments/\"*.ts \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/api/src/modules/payments/sslcommerz/\"*.ts)",
+      "Bash(for file in \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/web/app/\\(owner\\)/owner/\"*.tsx \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/web/app/\\(player\\)/\"*/*.tsx)",
+      "Bash(for file in \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/api/src/modules/reviews/\"* \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/api/src/modules/admin/\"* \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/api/src/modules/refunds/\"* \"/c/Users/User/OneDrive/Desktop/Sport Zen/sportzen/apps/api/src/modules/subscriptions/\"*)"
+    ]
+  }
+}

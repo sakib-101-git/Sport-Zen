@@ -1,0 +1,815 @@
+// =============================================================================
+// SPORT ZEN - PRISMA SCHEMA
+// Production-grade turf booking platform
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis, btree_gist]
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserRole {
+  PLAYER
+  OWNER
+  OWNER_STAFF
+  SUPER_ADMIN
+}
+
+enum AuthProvider {
+  EMAIL
+  PHONE
+  GOOGLE
+}
+
+enum FacilityStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum BookingStatus {
+  HOLD
+  CONFIRMED
+  CANCELED
+  COMPLETED
+  EXPIRED
+}
+
+enum PaymentStage {
+  NOT_PAID
+  ADVANCE_PAID
+  PARTIAL_OFFLINE
+  FULL_PAID_OFFLINE
+}
+
+enum CheckinStatus {
+  NOT_CHECKED_IN
+  VERIFIED
+}
+
+enum OfflinePaymentMethod {
+  CASH
+  BKASH
+  NAGAD
+  CARD
+  OTHER
+}
+
+enum PaymentIntentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  EXPIRED
+  LATE_SUCCESS_CONFLICT
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  PROCESSING
+  REFUNDED
+  FAILED
+  MANUAL_REQUIRED
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PENDING
+  PAID
+  OVERDUE
+  CANCELED
+}
+
+enum LedgerEntryType {
+  BOOKING_CREDIT
+  BOOKING_REVERSAL
+  PAYOUT
+  ADJUSTMENT
+  PLATFORM_FEE
+}
+
+enum BlockType {
+  MAINTENANCE
+  PRIVATE_EVENT
+  WEATHER
+  OTHER
+}
+
+enum NotificationType {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELED
+  BOOKING_REMINDER
+  PAYMENT_RECEIVED
+  REFUND_PROCESSED
+  REVIEW_RECEIVED
+  SUBSCRIPTION_EXPIRING
+  SUBSCRIPTION_SUSPENDED
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  PUSH
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  STATUS_CHANGE
+  PAYMENT
+  REFUND
+  LOGIN
+  LOGOUT
+}
+
+// =============================================================================
+// USER & AUTHENTICATION
+// =============================================================================
+
+model User {
+  id                  String    @id @default(uuid()) @db.Uuid
+  email               String?   @unique
+  emailVerified       Boolean   @default(false) @map("email_verified")
+  phone               String?   @unique
+  phoneVerified       Boolean   @default(false) @map("phone_verified")
+  passwordHash        String?   @map("password_hash")
+  name                String
+  avatarUrl           String?   @map("avatar_url")
+  role                UserRole  @default(PLAYER)
+  isActive            Boolean   @default(true) @map("is_active")
+  lastLoginAt         DateTime? @map("last_login_at") @db.Timestamptz
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt           DateTime? @map("deleted_at") @db.Timestamptz
+
+  // Relations
+  ownedFacilities     Facility[]          @relation("FacilityOwner")
+  staffAssignments    FacilityStaff[]
+  bookings            Booking[]           @relation("BookingPlayer")
+  reviews             Review[]
+  reviewReports       ReviewReport[]
+  refreshTokens       RefreshToken[]
+  otpRequests         OtpRequest[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]          @relation("AuditUser")
+  offlinePaymentsRecorded Booking[]       @relation("OfflinePaymentRecorder")
+  checkinVerifications    Booking[]       @relation("CheckinVerifier")
+
+  @@index([email])
+  @@index([phone])
+  @@index([role])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model RefreshToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  tokenHash   String   @map("token_hash")
+  familyId    String   @map("family_id") @db.Uuid
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model OtpRequest {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String?  @map("user_id") @db.Uuid
+  phone       String
+  otpHash     String   @map("otp_hash")
+  purpose     String   // login, register, link_phone
+  attempts    Int      @default(0)
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz
+  verifiedAt  DateTime? @map("verified_at") @db.Timestamptz
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([phone, purpose])
+  @@index([expiresAt])
+  @@map("otp_requests")
+}
+
+// =============================================================================
+// FACILITY & PLAY AREAS
+// =============================================================================
+
+model Facility {
+  id              String         @id @default(uuid()) @db.Uuid
+  ownerId         String         @map("owner_id") @db.Uuid
+  name            String
+  slug            String         @unique
+  description     String?
+  address         String
+  city            String
+  area            String         // Neighborhood/area name
+  // PostGIS geography point - handled via raw SQL
+  latitude        Float
+  longitude       Float
+  contactPhone    String         @map("contact_phone")
+  contactEmail    String?        @map("contact_email")
+  openingTime     String         @map("opening_time") // HH:mm format
+  closingTime     String         @map("closing_time") // HH:mm format
+  amenities       String[]       @default([])
+  policies        Json?          // Cancellation policy display text, etc.
+  status          FacilityStatus @default(PENDING_APPROVAL)
+  isApproved      Boolean        @default(false) @map("is_approved")
+  approvedAt      DateTime?      @map("approved_at") @db.Timestamptz
+  approvedBy      String?        @map("approved_by") @db.Uuid
+  rejectionReason String?        @map("rejection_reason")
+  avgRating       Float?         @map("avg_rating")
+  reviewCount     Int            @default(0) @map("review_count")
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt       DateTime?      @map("deleted_at") @db.Timestamptz
+
+  // Relations
+  owner           User           @relation("FacilityOwner", fields: [ownerId], references: [id])
+  photos          FacilityPhoto[]
+  playAreas       PlayArea[]
+  staff           FacilityStaff[]
+  reviews         Review[]
+  bookingBlocks   BookingBlock[]
+
+  @@index([ownerId])
+  @@index([slug])
+  @@index([city, area])
+  @@index([status])
+  @@index([isApproved])
+  @@index([deletedAt])
+  // Geo index created via raw SQL: CREATE INDEX idx_facility_location ON facilities USING GIST (location);
+  @@map("facilities")
+}
+
+model FacilityPhoto {
+  id          String   @id @default(uuid()) @db.Uuid
+  facilityId  String   @map("facility_id") @db.Uuid
+  url         String
+  caption     String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  isPrimary   Boolean  @default(false) @map("is_primary")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  facility    Facility @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+
+  @@index([facilityId])
+  @@map("facility_photos")
+}
+
+model FacilityStaff {
+  id          String   @id @default(uuid()) @db.Uuid
+  facilityId  String   @map("facility_id") @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  canManageBookings Boolean @default(true) @map("can_manage_bookings")
+  canManageBlocks   Boolean @default(true) @map("can_manage_blocks")
+  canVerifyCheckin  Boolean @default(true) @map("can_verify_checkin")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  facility    Facility @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([facilityId, userId])
+  @@map("facility_staff")
+}
+
+model SportType {
+  id              String   @id @default(uuid()) @db.Uuid
+  name            String   @unique
+  slug            String   @unique
+  icon            String?
+  description     String?
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  sportProfiles   SportProfile[]
+
+  @@map("sport_types")
+}
+
+model PlayArea {
+  id                String   @id @default(uuid()) @db.Uuid
+  facilityId        String   @map("facility_id") @db.Uuid
+  conflictGroupId   String   @map("conflict_group_id") @db.Uuid // Default: same as id; shared for multi-sport conflict
+  name              String   // "Pitch A", "Court 1"
+  description       String?
+  surfaceType       String?  @map("surface_type") // grass, artificial, clay, etc.
+  dimensions        String?  // "100m x 60m"
+  capacity          Int?     // Max players
+  isIndoor          Boolean  @default(false) @map("is_indoor")
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz
+
+  facility          Facility       @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  sportProfiles     SportProfile[]
+  bookings          Booking[]
+  bookingBlocks     BookingBlock[]
+
+  @@index([facilityId])
+  @@index([conflictGroupId])
+  @@index([deletedAt])
+  @@map("play_areas")
+}
+
+model SportProfile {
+  id                    String   @id @default(uuid()) @db.Uuid
+  playAreaId            String   @map("play_area_id") @db.Uuid
+  sportTypeId           String   @map("sport_type_id") @db.Uuid
+  slotIntervalMinutes   Int      @default(30) @map("slot_interval_minutes")
+  bufferMinutes         Int      @default(10) @map("buffer_minutes")
+  minLeadTimeMinutes    Int      @default(60) @map("min_lead_time_minutes") // Minimum booking lead time
+  maxAdvanceDays        Int      @default(14) @map("max_advance_days") // Max days in advance to book
+  allowedDurations      Int[]    @map("allowed_durations") // [60, 90, 120]
+  // Duration-based pricing: { "60": 1000, "90": 1400, "120": 1800 }
+  durationPrices        Json     @map("duration_prices")
+  // Peak duration prices (optional): { "60": 1200, "90": 1700, "120": 2200 }
+  peakDurationPrices    Json?    @map("peak_duration_prices")
+  isActive              Boolean  @default(true) @map("is_active")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  playArea              PlayArea   @relation(fields: [playAreaId], references: [id], onDelete: Cascade)
+  sportType             SportType  @relation(fields: [sportTypeId], references: [id])
+  peakRules             PeakPricingRule[]
+  bookings              Booking[]
+
+  @@unique([playAreaId, sportTypeId])
+  @@index([sportTypeId])
+  @@map("sport_profiles")
+}
+
+model PeakPricingRule {
+  id              String   @id @default(uuid()) @db.Uuid
+  sportProfileId  String   @map("sport_profile_id") @db.Uuid
+  dayOfWeek       Int      @map("day_of_week") // 0=Sunday, 6=Saturday
+  startTime       String   @map("start_time") // HH:mm in Asia/Dhaka
+  endTime         String   @map("end_time")   // HH:mm in Asia/Dhaka
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  sportProfile    SportProfile @relation(fields: [sportProfileId], references: [id], onDelete: Cascade)
+
+  @@index([sportProfileId])
+  @@map("peak_pricing_rules")
+}
+
+// =============================================================================
+// BOOKINGS
+// =============================================================================
+
+model Booking {
+  id                      String              @id @default(uuid()) @db.Uuid
+  bookingNumber           String              @unique @map("booking_number") // Human-readable: SZ-20240115-XXXX
+  playerId                String              @map("player_id") @db.Uuid
+  playAreaId              String              @map("play_area_id") @db.Uuid
+  sportProfileId          String              @map("sport_profile_id") @db.Uuid
+  conflictGroupId         String              @map("conflict_group_id") @db.Uuid
+
+  // Time range (UTC) - actual play time
+  startAt                 DateTime            @map("start_at") @db.Timestamptz
+  endAt                   DateTime            @map("end_at") @db.Timestamptz
+  // Blocked end time = endAt + buffer (for DB constraint)
+  blockedEndAt            DateTime            @map("blocked_end_at") @db.Timestamptz
+
+  durationMinutes         Int                 @map("duration_minutes")
+
+  // Pricing (stored in whole BDT as integers)
+  totalAmount             Int                 @map("total_amount")        // Full booking price
+  advanceAmount           Int                 @map("advance_amount")      // 10% advance = CEIL(total * 0.10)
+  platformCommission      Int                 @map("platform_commission") // Platform fee from advance
+  ownerAdvanceCredit      Int                 @map("owner_advance_credit") // advance - commission
+  isPeakPricing           Boolean             @default(false) @map("is_peak_pricing")
+
+  // Status
+  status                  BookingStatus       @default(HOLD)
+  paymentStage            PaymentStage        @default(NOT_PAID) @map("payment_stage")
+  holdExpiresAt           DateTime?           @map("hold_expires_at") @db.Timestamptz
+  confirmedAt             DateTime?           @map("confirmed_at") @db.Timestamptz
+  canceledAt              DateTime?           @map("canceled_at") @db.Timestamptz
+  completedAt             DateTime?           @map("completed_at") @db.Timestamptz
+  expiredAt               DateTime?           @map("expired_at") @db.Timestamptz
+  cancellationReason      String?             @map("cancellation_reason")
+
+  // Check-in
+  checkinStatus           CheckinStatus       @default(NOT_CHECKED_IN) @map("checkin_status")
+  qrToken                 String?             @unique @map("qr_token")
+  checkinVerifiedAt       DateTime?           @map("checkin_verified_at") @db.Timestamptz
+  checkinVerifiedByUserId String?             @map("checkin_verified_by_user_id") @db.Uuid
+
+  // Offline payment tracking (90% remaining)
+  offlineAmountCollected  Int                 @default(0) @map("offline_amount_collected")
+  offlinePaymentMethod    OfflinePaymentMethod? @map("offline_payment_method")
+  offlinePaymentRecordedByUserId String?      @map("offline_payment_recorded_by_user_id") @db.Uuid
+  offlinePaymentRecordedAt DateTime?          @map("offline_payment_recorded_at") @db.Timestamptz
+  offlinePaymentNotes     String?             @map("offline_payment_notes")
+
+  // Metadata
+  playerName              String              @map("player_name")
+  playerPhone             String              @map("player_phone")
+  playerEmail             String?             @map("player_email")
+  notes                   String?
+
+  createdAt               DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt               DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt               DateTime?           @map("deleted_at") @db.Timestamptz
+
+  // Relations
+  player                  User                @relation("BookingPlayer", fields: [playerId], references: [id])
+  playArea                PlayArea            @relation(fields: [playAreaId], references: [id])
+  sportProfile            SportProfile        @relation(fields: [sportProfileId], references: [id])
+  offlinePaymentRecorder  User?               @relation("OfflinePaymentRecorder", fields: [offlinePaymentRecordedByUserId], references: [id])
+  checkinVerifier         User?               @relation("CheckinVerifier", fields: [checkinVerifiedByUserId], references: [id])
+  paymentIntents          PaymentIntent[]
+  refunds                 Refund[]
+  review                  Review?
+  events                  BookingEvent[]
+  ledgerEntries           OwnerLedgerEntry[]
+
+  // time_range column and exclusion constraint created via raw SQL migration
+  @@index([playerId])
+  @@index([playAreaId])
+  @@index([sportProfileId])
+  @@index([conflictGroupId])
+  @@index([status])
+  @@index([startAt])
+  @@index([holdExpiresAt])
+  @@index([deletedAt])
+  @@map("bookings")
+}
+
+model BookingEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  bookingId   String   @map("booking_id") @db.Uuid
+  event       String   // created, confirmed, canceled, completed, expired, payment_received, etc.
+  fromStatus  String?  @map("from_status")
+  toStatus    String?  @map("to_status")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  createdBy   String?  @map("created_by") @db.Uuid
+
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([createdAt])
+  @@map("booking_events")
+}
+
+model BookingBlock {
+  id            String    @id @default(uuid()) @db.Uuid
+  facilityId    String    @map("facility_id") @db.Uuid
+  playAreaId    String?   @map("play_area_id") @db.Uuid // null = all play areas
+  conflictGroupId String  @map("conflict_group_id") @db.Uuid
+  blockType     BlockType @map("block_type")
+  reason        String?
+  startAt       DateTime  @map("start_at") @db.Timestamptz
+  endAt         DateTime  @map("end_at") @db.Timestamptz
+  isRecurring   Boolean   @default(false) @map("is_recurring")
+  recurringRule Json?     @map("recurring_rule") // For future: RRULE
+  createdById   String    @map("created_by_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz
+
+  facility      Facility  @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  playArea      PlayArea? @relation(fields: [playAreaId], references: [id], onDelete: Cascade)
+
+  @@index([facilityId])
+  @@index([playAreaId])
+  @@index([conflictGroupId])
+  @@index([startAt, endAt])
+  @@index([deletedAt])
+  @@map("booking_blocks")
+}
+
+// =============================================================================
+// PAYMENTS
+// =============================================================================
+
+model PaymentIntent {
+  id              String              @id @default(uuid()) @db.Uuid
+  bookingId       String              @map("booking_id") @db.Uuid
+  amount          Int                 // Amount in whole BDT
+  currency        String              @default("BDT")
+  status          PaymentIntentStatus @default(PENDING)
+  expiresAt       DateTime            @map("expires_at") @db.Timestamptz
+  metadataHash    String?             @map("metadata_hash") // For idempotency
+
+  // SSLCommerz fields
+  sslTranId       String?             @unique @map("ssl_tran_id")
+  sslSessionKey   String?             @map("ssl_session_key")
+  sslGatewayUrl   String?             @map("ssl_gateway_url")
+
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+
+  booking         Booking             @relation(fields: [bookingId], references: [id])
+  transactions    PaymentTransaction[]
+
+  @@index([bookingId])
+  @@index([sslTranId])
+  @@index([status])
+  @@map("payment_intents")
+}
+
+model PaymentTransaction {
+  id                String   @id @default(uuid()) @db.Uuid
+  paymentIntentId   String   @map("payment_intent_id") @db.Uuid
+  gateway           String   @default("SSLCOMMERZ")
+  tranId            String   @map("tran_id")
+  valId             String?  @map("val_id") // SSLCommerz validation ID
+  amount            Int
+  currency          String   @default("BDT")
+  status            String   // VALID, FAILED, CANCELLED, etc.
+  cardType          String?  @map("card_type")
+  cardBrand         String?  @map("card_brand")
+  bankTranId        String?  @map("bank_tran_id")
+  rawPayload        Json     @map("raw_payload")
+  verifiedAt        DateTime? @map("verified_at") @db.Timestamptz
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  paymentIntent     PaymentIntent @relation(fields: [paymentIntentId], references: [id])
+
+  @@index([paymentIntentId])
+  @@index([tranId])
+  @@map("payment_transactions")
+}
+
+model Refund {
+  id                    String       @id @default(uuid()) @db.Uuid
+  bookingId             String       @map("booking_id") @db.Uuid
+  paymentIntentId       String?      @map("payment_intent_id") @db.Uuid
+  refundAmount          Int          @map("refund_amount") // Amount to refund
+  platformFeeRetained   Int          @map("platform_fee_retained") // Fee kept by platform
+  originalAdvance       Int          @map("original_advance")
+  refundTier            String       @map("refund_tier") // >24h, 24h-6h, <6h
+  status                RefundStatus @default(REQUESTED)
+  reason                String
+  requestedAt           DateTime     @default(now()) @map("requested_at") @db.Timestamptz
+  approvedAt            DateTime?    @map("approved_at") @db.Timestamptz
+  approvedBy            String?      @map("approved_by") @db.Uuid
+  processedAt           DateTime?    @map("processed_at") @db.Timestamptz
+  failureReason         String?      @map("failure_reason")
+  gatewayRefundId       String?      @map("gateway_refund_id")
+  notes                 String?
+  createdAt             DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  booking               Booking      @relation(fields: [bookingId], references: [id])
+
+  @@index([bookingId])
+  @@index([status])
+  @@map("refunds")
+}
+
+// =============================================================================
+// SUBSCRIPTIONS & INVOICES
+// =============================================================================
+
+model SubscriptionPlan {
+  id                String   @id @default(uuid()) @db.Uuid
+  name              String
+  description       String?
+  monthlyPriceBdt   Int      @map("monthly_price_bdt")
+  trialDays         Int      @default(14) @map("trial_days")
+  maxFacilities     Int      @default(1) @map("max_facilities")
+  maxPlayAreas      Int      @default(5) @map("max_play_areas")
+  features          Json?    // Additional features
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  subscriptions     OwnerSubscription[]
+
+  @@map("subscription_plans")
+}
+
+model OwnerSubscription {
+  id                  String             @id @default(uuid()) @db.Uuid
+  ownerId             String             @map("owner_id") @db.Uuid
+  planId              String             @map("plan_id") @db.Uuid
+  status              SubscriptionStatus @default(TRIAL)
+  trialEndsAt         DateTime?          @map("trial_ends_at") @db.Timestamptz
+  currentPeriodStart  DateTime           @map("current_period_start") @db.Timestamptz
+  currentPeriodEnd    DateTime           @map("current_period_end") @db.Timestamptz
+  canceledAt          DateTime?          @map("canceled_at") @db.Timestamptz
+  suspendedAt         DateTime?          @map("suspended_at") @db.Timestamptz
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+
+  plan                SubscriptionPlan   @relation(fields: [planId], references: [id])
+  invoices            Invoice[]
+
+  @@unique([ownerId])
+  @@index([status])
+  @@map("owner_subscriptions")
+}
+
+model Invoice {
+  id                String        @id @default(uuid()) @db.Uuid
+  subscriptionId    String        @map("subscription_id") @db.Uuid
+  invoiceNumber     String        @unique @map("invoice_number")
+  amount            Int
+  currency          String        @default("BDT")
+  status            InvoiceStatus @default(DRAFT)
+  periodStart       DateTime      @map("period_start") @db.Timestamptz
+  periodEnd         DateTime      @map("period_end") @db.Timestamptz
+  dueDate           DateTime      @map("due_date") @db.Timestamptz
+  paidAt            DateTime?     @map("paid_at") @db.Timestamptz
+  paymentMethod     String?       @map("payment_method")
+  notes             String?
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  subscription      OwnerSubscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([subscriptionId])
+  @@index([status])
+  @@map("invoices")
+}
+
+// =============================================================================
+// OWNER LEDGER (SETTLEMENTS)
+// =============================================================================
+
+model OwnerLedgerEntry {
+  id              String           @id @default(uuid()) @db.Uuid
+  ownerId         String           @map("owner_id") @db.Uuid
+  bookingId       String?          @map("booking_id") @db.Uuid
+  entryType       LedgerEntryType  @map("entry_type")
+  amount          Int              // Positive = credit, Negative = debit
+  runningBalance  Int              @map("running_balance")
+  description     String
+  reference       String?          // External reference
+  periodMonth     String?          @map("period_month") // YYYY-MM for monthly settlements
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  booking         Booking?         @relation(fields: [bookingId], references: [id])
+
+  @@index([ownerId])
+  @@index([bookingId])
+  @@index([periodMonth])
+  @@index([createdAt])
+  @@map("owner_ledger_entries")
+}
+
+model OwnerSettlement {
+  id              String   @id @default(uuid()) @db.Uuid
+  ownerId         String   @map("owner_id") @db.Uuid
+  periodMonth     String   @map("period_month") // YYYY-MM
+  totalCredits    Int      @map("total_credits")
+  totalDebits     Int      @map("total_debits")
+  netAmount       Int      @map("net_amount")
+  status          String   @default("PENDING") // PENDING, PROCESSING, PAID
+  paidAt          DateTime? @map("paid_at") @db.Timestamptz
+  paymentRef      String?  @map("payment_ref")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([ownerId, periodMonth])
+  @@index([status])
+  @@map("owner_settlements")
+}
+
+// =============================================================================
+// REVIEWS
+// =============================================================================
+
+model Review {
+  id            String   @id @default(uuid()) @db.Uuid
+  bookingId     String   @unique @map("booking_id") @db.Uuid
+  facilityId    String   @map("facility_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  rating        Int      // 1-5
+  title         String?
+  comment       String?
+  isVisible     Boolean  @default(true) @map("is_visible")
+  moderatedAt   DateTime? @map("moderated_at") @db.Timestamptz
+  moderatedBy   String?  @map("moderated_by") @db.Uuid
+  moderationNote String? @map("moderation_note")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz
+
+  booking       Booking  @relation(fields: [bookingId], references: [id])
+  facility      Facility @relation(fields: [facilityId], references: [id])
+  user          User     @relation(fields: [userId], references: [id])
+  reports       ReviewReport[]
+
+  @@index([facilityId])
+  @@index([userId])
+  @@index([rating])
+  @@index([deletedAt])
+  @@map("reviews")
+}
+
+model ReviewReport {
+  id          String   @id @default(uuid()) @db.Uuid
+  reviewId    String   @map("review_id") @db.Uuid
+  reporterId  String   @map("reporter_id") @db.Uuid
+  reason      String
+  description String?
+  status      String   @default("PENDING") // PENDING, REVIEWED, DISMISSED
+  reviewedAt  DateTime? @map("reviewed_at") @db.Timestamptz
+  reviewedBy  String?  @map("reviewed_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  review      Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  reporter    User     @relation(fields: [reporterId], references: [id])
+
+  @@index([reviewId])
+  @@index([status])
+  @@map("review_reports")
+}
+
+// =============================================================================
+// NOTIFICATIONS
+// =============================================================================
+
+model Notification {
+  id          String             @id @default(uuid()) @db.Uuid
+  userId      String             @map("user_id") @db.Uuid
+  type        NotificationType
+  channel     NotificationChannel
+  title       String
+  body        String
+  data        Json?              // Additional data payload
+  sentAt      DateTime?          @map("sent_at") @db.Timestamptz
+  readAt      DateTime?          @map("read_at") @db.Timestamptz
+  failedAt    DateTime?          @map("failed_at") @db.Timestamptz
+  failReason  String?            @map("fail_reason")
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@index([sentAt])
+  @@map("notifications")
+}
+
+// =============================================================================
+// AUDIT LOGS
+// =============================================================================
+
+model AuditLog {
+  id            String      @id @default(uuid()) @db.Uuid
+  userId        String?     @map("user_id") @db.Uuid
+  action        AuditAction
+  entityType    String      @map("entity_type")
+  entityId      String      @map("entity_id") @db.Uuid
+  oldValues     Json?       @map("old_values")
+  newValues     Json?       @map("new_values")
+  ipAddress     String?     @map("ip_address")
+  userAgent     String?     @map("user_agent")
+  correlationId String?     @map("correlation_id") @db.Uuid
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  user          User?       @relation("AuditUser", fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([correlationId])
+  @@map("audit_logs")
+}
+
+// =============================================================================
+// PLATFORM CONFIGURATION
+// =============================================================================
+
+model PlatformConfig {
+  id                      String   @id @default(uuid()) @db.Uuid
+  key                     String   @unique
+  value                   Json
+  description             String?
+  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("platform_config")
+}
