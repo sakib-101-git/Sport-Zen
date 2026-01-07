@@ -11,6 +11,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from '../../common/guards/jwt.guard';
 import { CurrentUser } from '../../common/decorators/user.decorator';
+import { ThrottleOTP, ThrottleLogin } from '../../common/decorators/throttle.decorator';
 import { IsEmail, IsString, MinLength, IsOptional, IsEnum } from 'class-validator';
 import { UserRole } from '@prisma/client';
 
@@ -93,6 +94,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @ThrottleLogin()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Login with email/password' })
   async login(@Body() dto: LoginDto) {
@@ -148,6 +150,7 @@ export class AuthController {
   // ============================================================================
 
   @Post('phone/request-otp')
+  @ThrottleOTP()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Request OTP for phone login/registration' })
   async requestPhoneOTP(@Body() dto: RequestOTPDto) {
@@ -156,6 +159,7 @@ export class AuthController {
   }
 
   @Post('phone/verify-otp')
+  @ThrottleOTP()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify OTP and login/register with phone' })
   async verifyPhoneOTP(@Body() dto: VerifyOTPDto) {
@@ -176,6 +180,7 @@ export class AuthController {
   }
 
   @Post('link-phone/request-otp')
+  @ThrottleOTP()
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
@@ -189,6 +194,7 @@ export class AuthController {
   }
 
   @Post('link-phone/verify-otp')
+  @ThrottleOTP()
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()

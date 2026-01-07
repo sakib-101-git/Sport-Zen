@@ -4,6 +4,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
+import { PrismaService } from './common/db/prisma.service';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -89,35 +90,78 @@ async function bootstrap() {
       .addTag('payments', 'Payment processing')
       .addTag('owner', 'Owner panel')
       .addTag('admin', 'Admin panel')
+      .addTag('health', 'Health checks')
       .build();
 
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('api/docs', app, document);
   }
 
-  // Health check endpoint (before global prefix)
-  app.getHttpAdapter().get('/health', (req, res) => {
-    res.status(200).json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      environment: process.env.NODE_ENV || 'development',
-    });
+  // ==========================================================================
+  // Graceful Shutdown Configuration
+  // ==========================================================================
+
+  // Enable shutdown hooks
+  app.enableShutdownHooks();
+
+  // Get Prisma service for graceful disconnect
+  const prismaService = app.get(PrismaService);
+
+  // Handle graceful shutdown
+  const gracefulShutdown = async (signal: string) => {
+    logger.log(`Received ${signal}, starting graceful shutdown...`);
+
+    // Stop accepting new connections
+    try {
+      await app.close();
+      logger.log('HTTP server closed');
+    } catch (err) {
+      logger.error('Error closing HTTP server:', err);
+    }
+
+    // Disconnect from database
+    try {
+      await prismaService.$disconnect();
+      logger.log('Database connection closed');
+    } catch (err) {
+      logger.error('Error disconnecting from database:', err);
+    }
+
+    logger.log('Graceful shutdown completed');
+    process.exit(0);
+  };
+
+  // Listen for termination signals
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+  // Handle uncaught errors
+  process.on('uncaughtException', (error) => {
+    logger.error('Uncaught Exception:', error);
+    gracefulShutdown('UNCAUGHT_EXCEPTION');
   });
 
-  app.getHttpAdapter().get('/ready', (req, res) => {
-    // Could add database/redis connectivity checks here
-    res.status(200).json({
-      status: 'ready',
-      timestamp: new Date().toISOString(),
-    });
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    // Don't exit on unhandled rejection in production, just log
+    if (!isProduction) {
+      gracefulShutdown('UNHANDLED_REJECTION');
+    }
   });
+
+  // ==========================================================================
+  // Start Server
+  // ==========================================================================
 
   const port = process.env.PORT || 3001;
   await app.listen(port);
 
   logger.log(`Application running on: http://localhost:${port}`);
+  logger.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   if (!isProduction) {
     logger.log(`Swagger docs: http://localhost:${port}/api/docs`);
+    logger.log(`Health check: http://localhost:${port}/api/v1/health`);
+    logger.log(`Readiness check: http://localhost:${port}/api/v1/health/ready`);
   }
 }
 
